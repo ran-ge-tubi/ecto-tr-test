@@ -19,7 +19,27 @@ defmodule Friends.Test_Person do
     end)
   end
 
-  def test_fail_auto_rollback_plain do
+  def test_fail_error_auto_rollback_plain do
+    Friends.Repo.transaction(fn ->
+      john_update =
+        from Friends.Person,
+          where: [first_name: "John"],
+          update: [set: [first_name: "Ran"]]
+
+      IO.puts("leading exception because uniq key constraint")
+      Friends.Repo.update_all(john_update, [])
+      IO.puts("can't not reach here because exception raised in the above line")
+
+      jane_update =
+        from Friends.Person,
+          where: [first_name: "Jane"],
+          update: [inc: [age: -10]]
+
+      {1, _} = Friends.Repo.update_all(jane_update, [])
+    end)
+  end
+
+  def test_fail_error_auto_rollback_catch_plain do
     Friends.Repo.transaction(fn ->
       john_update =
         from Friends.Person,
@@ -38,6 +58,7 @@ defmodule Friends.Test_Person do
       IO.puts("this line can be run, but the db operatoin below can not run
        because the transacation is aborted")
 
+      # code below will raise an exception
       jane_update =
         from Friends.Person,
           where: [first_name: "Jane"],
@@ -68,6 +89,30 @@ defmodule Friends.Test_Person do
           update: [inc: [age: -10]]
 
       {1, _} = Friends.Repo.update_all(jane_update, [])
+    end)
+  end
+
+  def test_fail_error_nested_tr_plain do
+    # this change would rollback, because the exception below
+    Friends.Repo.transaction(fn ->
+      ryan_update =
+        from Friends.Person,
+          where: [first_name: "Ryan"],
+          update: [inc: [age: 10]]
+
+      {1, _} = Friends.Repo.update_all(ryan_update, [])
+      case test_fail_error_auto_rollback_plain() do
+        {:ok, _} -> IO.puts("success")
+        {:error, _} -> IO.puts("fail")
+        {_, _} -> IO.puts("shoud not reach here")
+      end
+
+      # code below can not run, because the exception above
+      ryan_update =
+        from Friends.Person,
+          where: [first_name: "Ryan"],
+          update: [inc: [age: 10]]
+      {1, _} = Friends.Repo.update_all(ryan_update, [])
     end)
   end
 end
