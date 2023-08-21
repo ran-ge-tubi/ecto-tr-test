@@ -90,7 +90,7 @@ defmodule Friends.Test_Person do
         where: [first_name: "Jane"],
         update: [inc: [age: -10]]
 
-    # multi can not do much for exception
+    # multi will not catch exception automatically
     Multi.new()
     |> Multi.update_all(:john, john_update, [])
     |> Multi.run(:check_john, fn _repo, changes ->
@@ -162,7 +162,7 @@ end
         where: [first_name: "Jane"],
         update: [inc: [age: -10]]
 
-    # multi can not do much for exception
+    # multi will not catch exception automatically, we need to catch it manually with Multi.run()
     Multi.new()
     |> Multi.run(:john, fn repo, _ ->
       try do
@@ -202,6 +202,9 @@ end
     end
   end
 
+  # This is a helper method to help test nested transaction, this method will not trigger
+  # 'operation in an aborted transaction" exception
+  @spec test_fail_error_auto_rollback_catch_with_proper_ans_plain :: any
   def test_fail_error_auto_rollback_catch_with_proper_ans_plain do
     Friends.Repo.transaction(fn ->
       john_update =
@@ -220,10 +223,8 @@ end
     end)
   end
 
-  def test_fail_error_auto_rollback_catch_with_proper_ans_multi do
-    # we don't need test this case, because using multi prevents any operations from running in an aborted transaction
-  end
 
+  @spec test_fail_manually_rollback_plain :: any
   def test_fail_manually_rollback_plain do
     Friends.Repo.transaction(fn ->
       john_update =
@@ -263,7 +264,6 @@ end
         where: [first_name: "Jane"],
         update: [inc: [age: -10]]
 
-    # multi can not do much for exception
     Multi.new()
     |> Multi.update_all(:john, john_update, [])
     |> Multi.run(:check_john, fn _repo, changes ->
@@ -296,7 +296,7 @@ end
         IO.inspect(changes)
         IO.inspect("I can do some clean job here")
         {:error, "fail"}
-    end
+      end
   end
 
   def test_fail_error_nested_tr_plain do
@@ -306,8 +306,8 @@ end
         from Friends.Person,
           where: [first_name: "Ryan"],
           update: [inc: [age: 10]]
-
       {1, _} = Friends.Repo.update_all(ryan_update, [])
+
       case test_fail_error_auto_rollback_plain() do
         {:ok, _} -> IO.puts("success")
         {:error, _} -> IO.puts("fail")
@@ -325,7 +325,7 @@ end
 
   def test_fail_error_nested_tr_multi do
     # would be the same effect as `test_fail_error_nested_tr_plain`, \
-    # because multi can not do much to exception, exception will raise
+    # because multi will not catch exception automatically, exception will raise
   end
 
   def test_fail_error_catch_nested_tr_plain do
@@ -339,8 +339,8 @@ end
         from Friends.Person,
           where: [first_name: "Ryan"],
           update: [inc: [age: 10]]
-
       {1, _} = Friends.Repo.update_all(ryan_update, [])
+
       # within an outer transaction, the result will be {:ok, :ok}, this is so tricky
       # TODO, need to investigate further
       case ans = test_fail_error_auto_rollback_catch_with_proper_ans_plain() do
@@ -353,7 +353,7 @@ end
         {_, _} -> IO.puts("shoud not reach here")
       end
 
-      # operation below can not run, because connection is aborted due to exception above
+      # operation below will raise exception, because connection is aborted due to exception above
       ryan_update =
         from Friends.Person,
           where: [first_name: "Ryan"],
@@ -362,9 +362,75 @@ end
     end)
   end
 
-  @spec test_fail_error_catch_nested_tr_multi :: nil
+  # This method is an helper method to helper test nested transaction with multi
+  # when the exception raised in inner method has been rescued
+  def test_fail_error_auto_rollback_catch_multi_inner_component do
+    john_update =
+      from Friends.Person,
+        where: [first_name: "John"],
+        update: [set: [first_name: "Ran"]]
+
+    jane_update =
+      from Friends.Person,
+        where: [first_name: "Jane"],
+        update: [inc: [age: -10]]
+
+    # multi will not catch exception automatically, we need to catch it manually with Multi.run()
+    Multi.new()
+    |> Multi.run(:john, fn repo, _ ->
+      try do
+        IO.puts("leading exception because uniq key constraint")
+        repo.update_all(john_update, [])
+        IO.puts("can not reach here because exception raised in the above line")
+        {:ok, "success"}
+      rescue
+        Postgrex.Error ->
+          IO.puts("Caught a Postgrex error")
+          {:error, "fail"}
+      end
+    end)
+    |> Multi.run(:check_john, fn _repo, changes ->
+      case changes do
+        %{john: {1, _}} -> {:ok, nil}
+        %{john: {_, _}} -> {:error, {:failed_update, "john"}}
+      end
+    end)
+    |> Multi.update_all(:jane, jane_update, [])
+    |> Multi.run(:check_jane, fn _repo, changes ->
+      case changes do
+        %{jane: {1, _}} -> {:ok, nil}
+        %{jane: {_, _}} -> {:error, {:failed_update, "jane"}}
+      end
+    end)
+  end
+
+
   def test_fail_error_catch_nested_tr_multi do
-    #TODO
+    ryan_update =
+      from Friends.Person,
+        where: [first_name: "Ryan"],
+        update: [inc: [age: 10]]
+
+    test_fail_error_auto_rollback_catch_multi_inner_component()
+    |> Multi.update_all(:ryan, ryan_update, [])
+    |> Multi.run(:check_ryan, fn _repo, changes ->
+      case changes do
+        %{jane: {1, _}} -> {:ok, nil}
+        %{jane: {_, _}} -> {:error, {:failed_update, "ryan"}}
+      end
+    end)
+    |> Friends.Repo.transaction()
+    |> case do
+      {:ok, changes} ->
+        IO.inspect(changes)
+        {:ok, "success"}
+      {:error, failed_operation, failed_value, changes} ->
+        IO.inspect(failed_operation)
+        IO.inspect(failed_value)
+        IO.inspect(changes)
+        IO.inspect("I can do some clean job here")
+        {:error, "fail"}
+      end
   end
 
   @spec test_fail_manual_rollback_nested_tr_plain :: any
@@ -402,8 +468,69 @@ end
     end)
   end
 
+  # This method is an helper method to helper test nested transaction with multi
+  # when the transaction in the inner method is rolled back manually
+  def test_fail_manual_rollback_catch_multi_inner_component do
+    john_update =
+      from Friends.Person,
+        where: [first_name: "John"],
+        update: [inc: [age: -10]]
+
+    jane_update =
+      from Friends.Person,
+        where: [first_name: "Jane"],
+        update: [inc: [age: -10]]
+
+    Multi.new()
+    |> Multi.update_all(:john, john_update, [])
+    |> Multi.run(:check_john, fn _repo, changes ->
+      case changes do
+        %{john: {1, _}} ->
+          # you can not manual roll back in multi
+          # IO.puts("gonna maunall roll back")
+          # repo.rollback({:manual_rollback, "rollback the john change"})
+
+          # if you want to terminate the transaction and rollback, just return {:error, value}
+          {:error, "mock manual rollback"}
+        %{john: {_, _}} -> {:error, {:failed_update, "john"}}
+      end
+    end)
+    |> Multi.update_all(:jane, jane_update, [])
+    |> Multi.run(:check_jane, fn _repo, changes ->
+      case changes do
+        %{jane: {1, _}} -> {:ok, nil}
+        %{jane: {_, _}} -> {:error, {:failed_update, "jane"}}
+      end
+    end)
+
+  end
+
   def test_fail_manual_rollback_nested_tr_multi do
-    # TODO
+    ryan_update =
+      from Friends.Person,
+        where: [first_name: "Ryan"],
+        update: [inc: [age: 10]]
+
+    test_fail_manual_rollback_catch_multi_inner_component()
+    |> Multi.update_all(:ryan, ryan_update, [])
+    |> Multi.run(:check_ryan, fn _repo, changes ->
+      case changes do
+        %{jane: {1, _}} -> {:ok, nil}
+        %{jane: {_, _}} -> {:error, {:failed_update, "ryan"}}
+      end
+    end)
+    |> Friends.Repo.transaction()
+    |> case do
+      {:ok, changes} ->
+        IO.inspect(changes)
+        {:ok, "success"}
+      {:error, failed_operation, failed_value, changes} ->
+        IO.inspect(failed_operation)
+        IO.inspect(failed_value)
+        IO.inspect(changes)
+        IO.inspect("I can do some clean job here")
+        {:error, "fail"}
+      end
   end
 
 end
