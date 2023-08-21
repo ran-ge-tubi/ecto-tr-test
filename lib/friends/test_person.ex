@@ -20,6 +20,7 @@ defmodule Friends.Test_Person do
     end)
   end
 
+  @spec test_success_multi :: any
   def test_success_multi do
       john_update =
         from Friends.Person,
@@ -177,9 +178,13 @@ end
       end
     end)
     |> Multi.run(:check_john, fn _repo, changes ->
+      IO.puts("geran")
+      IO.inspect(changes)
       case changes do
         %{john: {1, _}} -> {:ok, nil}
-        %{john: {_, _}} -> {:error, {:failed_update, "john"}}
+        %{john: {_, _}} ->
+          IO.puts("is this code really run?")
+          {:error, {:failed_update, "john"}}
       end
     end)
     |> Multi.update_all(:jane, jane_update, [])
@@ -531,6 +536,29 @@ end
         IO.inspect("I can do some clean job here")
         {:error, "fail"}
       end
+  end
+
+  @spec test_update_and_update! :: any
+  def test_update_and_update! do
+
+    Friends.Repo.transaction(fn ->
+      person = Friends.Repo.get(Friends.Person, 3);
+      changeset = Friends.Person.changeset(person, %{first_name: "Ran"})
+
+      # although there is no exception raised, the transaction is also rolled back
+      # because the sql already touched the database
+      res = Friends.Repo.update(changeset)
+      IO.puts("this is an error")
+      IO.inspect(res)
+
+      jane_update =
+        from Friends.Person,
+          where: [first_name: "Jane"],
+          update: [inc: [age: -10]]
+
+      {1, _} = Friends.Repo.update_all(jane_update, [])
+
+    end)
   end
 
 end

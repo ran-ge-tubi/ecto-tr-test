@@ -11,7 +11,8 @@ defmodule Friends.Person do
   def changeset(person, params \\ %{}) do
     person
     |> Ecto.Changeset.cast(params, [:first_name, :last_name, :age])
-    |> Ecto.Changeset.validate_required([:first_name, :last_name])
+    # |> Ecto.Changeset.validate_required([:first_name, :last_name])
+    |> Ecto.Changeset.unique_constraint(:first_name)
   end
 
   def test do
