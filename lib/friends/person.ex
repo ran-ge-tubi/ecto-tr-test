@@ -13,6 +13,7 @@ defmodule Friends.Person do
     |> Ecto.Changeset.cast(params, [:first_name, :last_name, :age])
     # |> Ecto.Changeset.validate_required([:first_name, :last_name])
     |> Ecto.Changeset.unique_constraint(:first_name)
+    |> Ecto.Changeset.validate_length(:first_name, min: 5)
   end
 
   def test do
