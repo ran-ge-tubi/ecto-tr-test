@@ -78,7 +78,7 @@ defmodule Friends.Test_Person do
           update: [set: [first_name: "Ran"]]
         )
 
-      IO.puts("leading exception because uniq key constraint")
+      IO.puts("causing exception because uniq key constraint")
       Friends.Repo.update_all(john_update, [])
       IO.puts("can not reach here because exception raised in the above line")
 
@@ -144,7 +144,7 @@ defmodule Friends.Test_Person do
         )
 
       try do
-        IO.puts("leading exception because uniq key constraint")
+        IO.puts("causing exception because uniq key constraint")
         Friends.Repo.update_all(john_update, [])
         IO.puts("can not reach here because exception raised in the above line")
       rescue
@@ -168,8 +168,9 @@ defmodule Friends.Test_Person do
 
   def test_fail_error_auto_rollback_catch_multi do
     # the main difference between this multi version and plain version in test_fail_error_auto_rollback_catch_plain
-    # is that, because it enforces the component interface(input and output), jane_update would not be called,
-    # and there would be no exception raised.
+    # is that, because it enforces the component interface(input and output), multi would terminate the execution
+    # when it met {:error, _}, and jane_update would not be called, and there would be no running op in an aborted
+    # transaction exception raised.
     john_update =
       from(Friends.Person,
         where: [first_name: "John"],
@@ -186,7 +187,7 @@ defmodule Friends.Test_Person do
     Multi.new()
     |> Multi.run(:john, fn repo, _ ->
       try do
-        IO.puts("leading exception because uniq key constraint")
+        IO.puts("causing exception because uniq key constraint")
         repo.update_all(john_update, [])
         IO.puts("can not reach here because exception raised in the above line")
         {:ok, "success"}
@@ -242,7 +243,7 @@ defmodule Friends.Test_Person do
         )
 
       try do
-        IO.puts("leading exception because uniq key constraint")
+        IO.puts("causing exception because uniq key constraint")
         Friends.Repo.update_all(john_update, [])
         IO.puts("can not reach here because exception raised in the above line")
       rescue
@@ -271,7 +272,7 @@ defmodule Friends.Test_Person do
       end
 
       IO.puts(
-        "this line can not be run, because manual rollback will immediately leave the funtion"
+        "this line can not be run, because manual rollback will immediately leave the transaction call"
       )
 
       jane_update =
@@ -286,9 +287,9 @@ defmodule Friends.Test_Person do
 
   def test_fail_manually_rollback_multi do
     # the main difference to the `test_fail_manually_rollback_plain` is that you don't need to manually
-    # rollback in the multi, all you need is to return the {:error, value}, and you also acquite the
-    # ability that control is not leaving the func, and you can do something you want in the final
-    # pattern matching block, all of this is thanks to multi's abstraction of the transaction component.
+    # rollback in the multi, all you need is to return the {:error, value}, and the multi will just
+    # terminate all the subsequent operations, and you also have the ability to inspect the transaction
+    # execuation resule by the return value from Repo.transaction() when it is called with multi object
     john_update =
       from(Friends.Person,
         where: [first_name: "John"],
@@ -340,8 +341,8 @@ defmodule Friends.Test_Person do
   end
 
   def test_fail_error_nested_tr_plain do
-    # this change would rollback, because the exception below
     Friends.Repo.transaction(fn ->
+      # this change would rollback, because the exception raised in the nested func below
       ryan_update =
         from(Friends.Person,
           where: [first_name: "Ryan"],
@@ -368,8 +369,9 @@ defmodule Friends.Test_Person do
   end
 
   def test_fail_error_nested_tr_multi do
-    # would be the same effect as `test_fail_error_nested_tr_plain`, \
-    # because multi will not catch exception automatically, exception will raise
+    # would be the same effect as `test_fail_error_nested_tr_plain`,
+    # because multi will not catch exceptions raised by our own code
+    # automatically, exception will raise
   end
 
   def test_fail_error_catch_nested_tr_plain do
@@ -432,7 +434,7 @@ defmodule Friends.Test_Person do
     Multi.new()
     |> Multi.insert(:john, fn repo, _ ->
       try do
-        IO.puts("leading exception because uniq key constraint")
+        IO.puts("causing exception because uniq key constraint")
         repo.update_all(john_update, [])
         IO.puts("can not reach here because exception raised in the above line")
         {:ok, "success"}
