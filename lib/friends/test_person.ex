@@ -231,8 +231,8 @@ defmodule Friends.Test_Person do
     end
   end
 
-  # This is a helper method to help test nested transaction, this method will not trigger
-  # 'operation in an aborted transaction" exception
+  # This is a helper method to help test nested transaction, this method
+  # would manually catch the db exception
   @spec test_fail_error_auto_rollback_catch_with_proper_ans_plain :: any
   def test_fail_error_auto_rollback_catch_with_proper_ans_plain do
     Friends.Repo.transaction(fn ->
@@ -242,6 +242,8 @@ defmodule Friends.Test_Person do
           update: [set: [first_name: "Ran"]]
         )
 
+      # here, althought we catch the db exception, the value of the whole
+      # Repo.transaction() would still be {:error, :rollback}
       try do
         IO.puts("causing exception because uniq key constraint")
         Friends.Repo.update_all(john_update, [])
@@ -249,6 +251,9 @@ defmodule Friends.Test_Person do
       rescue
         Postgrex.Error ->
           IO.puts("Caught a Postgrex error")
+        # I think it's good habit to always call rollback when something goes wrong
+        # Friends.Repo.rollback("manual rollback")
+        "hello world"
       end
     end)
   end
@@ -375,12 +380,15 @@ defmodule Friends.Test_Person do
   end
 
   def test_fail_error_catch_nested_tr_plain do
-    # without an outer transaction, return will be {:error, :rollback}
+    # here there is a tricky part, without an outer transaction,
+    # test_fail_error_auto_rollback_catch_with_proper_ans_plain will return
+    # {:error, :rollback}, this is the last value evaluated from the last expression,
+    # which is Repo.transaction(), this behavior is as expected
     ans = test_fail_error_auto_rollback_catch_with_proper_ans_plain()
     IO.inspect(ans)
 
-    # this change would rollback, because the exception below
     Friends.Repo.transaction(fn ->
+      # this change would rollback, because the exception below
       ryan_update =
         from(Friends.Person,
           where: [first_name: "Ryan"],
@@ -389,9 +397,15 @@ defmodule Friends.Test_Person do
 
       {1, _} = Friends.Repo.update_all(ryan_update, [])
 
-      # within an outer transaction, the result will be {:ok, :ok}, this is so tricky
-      # TODO, need to investigate further
-      case ans = test_fail_error_auto_rollback_catch_with_proper_ans_plain() do
+      # tricky here, if test_fail_error_auto_rollback_catch_with_proper_ans_plain is called
+      # within an outer transaction, the return value would be
+      # {:ok, #{value of the func param of the Repo.transaction()}}. Manually calling rollback()
+      # in the rescue clause in the fuc would return the expected {:error, _} value, so I think
+      # always manually calling rollback() when something goes wrong is a good habit
+      ans = test_fail_error_auto_rollback_catch_with_proper_ans_plain()
+      # the output would be {:ok, "hello world"}
+      IO.inspect("within a tr, the result would be #{inspect(ans)}")
+      case ans do
         {:ok, _} ->
           IO.inspect(ans)
           IO.puts("success")
@@ -415,7 +429,7 @@ defmodule Friends.Test_Person do
     end)
   end
 
-  # This method is an helper method to helper test nested transaction with multi
+  # This method is an helper method to help test nested transaction with multi
   # when the exception raised in inner method has been rescued
   def test_fail_error_auto_rollback_catch_multi_inner_component do
     john_update =
@@ -430,9 +444,9 @@ defmodule Friends.Test_Person do
         update: [inc: [age: -10]]
       )
 
-    # multi will not catch exception automatically, we need to catch it manually with Multi.run()
+    # multi will not catch our own exception automatically, we need to catch it manually with Multi.run()
     Multi.new()
-    |> Multi.insert(:john, fn repo, _ ->
+    |> Multi.run(:john, fn repo, _ ->
       try do
         IO.puts("causing exception because uniq key constraint")
         repo.update_all(john_update, [])
@@ -491,8 +505,8 @@ defmodule Friends.Test_Person do
 
   @spec test_fail_manual_rollback_nested_tr_plain :: any
   def test_fail_manual_rollback_nested_tr_plain do
-    # this change would rollback, because rolled back in the nested transaction
     Friends.Repo.transaction(fn ->
+      # this change would rollback, because the rollback in the nested transaction
       ryan_update =
         from(Friends.Person,
           where: [first_name: "Ryan"],
@@ -510,22 +524,21 @@ defmodule Friends.Test_Person do
           IO.inspect(ans)
           IO.puts("fail")
 
+          # do manual rollback again to prevent the db op below from running, which would raise exception
+          Friends.Repo.rollback("this is a random message")
+
         {_, _} ->
           IO.puts("shoud not reach here")
       end
 
-      # code below would raise exception, because the transacation has already been rolled back
-      # ryan_update =
-      #   from Friends.Person,
-      #     where: [first_name: "Ryan"],
-      #     update: [inc: [age: 10]]
-      # {1, _} = Friends.Repo.update_all(ryan_update, [])
-
-      # or some other things
-      IO.puts("print something nonsense")
-
-      # can do manual rollback again
-      Friends.Repo.rollback("this is a random message")
+      # if there is no rollback above on the pattern matching clause,
+      # code below would raise exception, because the transacation has
+      # already been rolled back in the nested transaction
+      ryan_update =
+        from Friends.Person,
+          where: [first_name: "Ryan"],
+          update: [inc: [age: 10]]
+      {1, _} = Friends.Repo.update_all(ryan_update, [])
     end)
   end
 
@@ -599,40 +612,47 @@ defmodule Friends.Test_Person do
     end
   end
 
-  def test_update_and_update do
+  def test_difference_between_update_and_update! do
     Friends.Repo.transaction(fn ->
       person = Friends.Repo.get(Friends.Person, 3)
       IO.inspect(person)
       changeset = Friends.Person.changeset(person, %{first_name: "Ran"})
 
-      # although there is no exception raised, the transaction is also rolled back
-      # because the sql already touched the database
+      # Because we have Ecto.Changeset.unique_constraint(:first_name) config
+      # when wireing changeset, calling update() would not raise exception,
+      # but update!() would still raise exception.
+      # Although there is no exception raised, the transaction still gets rolled back,
+      # because the sql has already touched the database.
       res = Friends.Repo.update(changeset)
-      IO.puts("this is an error")
-      IO.inspect(res)
+      case res do
+        {:ok, _} -> IO.puts("success update")
+        {:error, _} ->
+          IO.puts("there is an error")
+          # if we don't rollback here, the sql operation below would raise excpetion
+          # because of aborted transaction exception, so we need to check the result
+          # of db result to properly rollback the tr.
+          Friends.Repo.rollback("needs to rollback here")
+      end
 
       jane_update =
         from(Friends.Person,
           where: [first_name: "Jane"],
           update: [inc: [age: -10]]
         )
-
       {1, _} = Friends.Repo.update_all(jane_update, [])
     end)
   end
 
-  def tmp_test do
+  def test_with_clause do
     user = %{first: "doomspork"}
-
     ans =
       with {:ok, first} <- Map.fetch(user, :first),
            {:ok, last} <- Map.fetch(user, :last),
            do: last <> ", " <> first
-
-    ans
+    IO.puts("ans is #{inspect(ans)}")
   end
 
-  def update_jane() do
+  def update_jane_helper() do
     jane_update =
       from(Friends.Person,
         where: [first_name: "Jane"],
@@ -650,15 +670,17 @@ defmodule Friends.Test_Person do
       person = Friends.Repo.get(Friends.Person, 3)
       changeset = Friends.Person.changeset(person, %{first_name: "Ran"})
 
-      # using plain transaction has a problem, that is fun returning {:error, _} does not
-      # necessarily mean that the function underneath actually touched the db and trigger the
-      # rollback, for example, some changeset validation is actually executed on client side
-      # without touching the db, so basically that means, we need to add manual rollback at
-      # everywhere where we checked the return value. But by using `with`, can I add a last rollback
-      # as a whole at the end of with block?
+      # When using plain Repo.transaction(), because besically we need to check
+      # every return value of the nesting func call (because ) to prevent causing
+      # db operation on oborted transaction excpeiton, and when the condition
+      # checking is complex, we need to write a lot of check code as
+      # https://hexdocs.pm/ecto/composable-transactions-with-multi.html#composing-with-data-structures
+      # shows, but we can use `with` clause to make the rollback operation be at
+      # a centor place to make code clean.
 
       with_ans =
-        with {:ok, _} <- update_jane(),
+        with {:ok, _} <- update_jane_helper(),
+              # this second op would return error
              {:ok, _} <- Friends.Repo.update(changeset) do
           IO.puts("this expression can not be run")
         end
@@ -670,9 +692,7 @@ defmodule Friends.Test_Person do
         {:ok, _} = with_ans ->
           with_ans
 
-        {:error, _} = with_ans ->
-          Friends.Repo.rollback("manually rollback at the end of the line")
-          with_ans
+        {:error, _} -> Friends.Repo.rollback("manually rollback at the end of the line")
       end
     end)
   end
