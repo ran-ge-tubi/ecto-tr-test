@@ -1,5 +1,6 @@
 defmodule Friends.Test_Person do
   import Ecto.Query
+  alias Mix.Tasks.Hex.Repo
   alias Ecto.Multi
 
   def test_success_plain do
@@ -40,7 +41,7 @@ defmodule Friends.Test_Person do
     |> Multi.update_all(:john, john_update, [])
     |> Multi.run(:check_john, fn _repo, changes ->
       case changes do
-        %{john: {1, _}} -> {:ok, nil}
+        %{john: {1, _}} -> {:error, "what is going on"}
         %{john: {_, _}} -> {:error, {:failed_update, "john"}}
       end
     end)
@@ -63,8 +64,11 @@ defmodule Friends.Test_Person do
 
       # {:ok, "success"}
       {:error, failed_operation, failed_value, changes} ->
+        IO.inspect("failed op")
         IO.inspect(failed_operation)
+        IO.inspect("failed value")
         IO.inspect(failed_value)
+        IO.inspect("failed changes")
         IO.inspect(changes)
         {:error, "fail"}
     end
@@ -106,7 +110,7 @@ defmodule Friends.Test_Person do
       )
 
     # multi will not catch exception automatically
-    Multi.new()
+    res =     Multi.new()
     |> Multi.update_all(:john, john_update, [])
     |> Multi.run(:check_john, fn _repo, changes ->
       case changes do
@@ -133,6 +137,8 @@ defmodule Friends.Test_Person do
         IO.inspect(changes)
         {:error, "fail"}
     end
+
+    IO.puts("what res is #{inspect(res)}")
   end
 
   def test_fail_error_auto_rollback_catch_plain do
@@ -544,6 +550,7 @@ defmodule Friends.Test_Person do
 
   # This method is an helper method to helper test nested transaction with multi
   # when the transaction in the inner method is rolled back manually
+  @spec test_fail_manual_rollback_catch_multi_inner_component :: Ecto.Multi.t()
   def test_fail_manual_rollback_catch_multi_inner_component do
     john_update =
       from(Friends.Person,
@@ -665,6 +672,7 @@ defmodule Friends.Test_Person do
     end
   end
 
+  @spec test_using_with_rollback :: any
   def test_using_with_rollback do
     Friends.Repo.transaction(fn ->
       person = Friends.Repo.get(Friends.Person, 3)
@@ -696,4 +704,10 @@ defmodule Friends.Test_Person do
       end
     end)
   end
+
+  def test_get_behavior() do
+    ans = Friends.Repo.get!(Friends.Person, 1)
+    IO.puts("#{inspect(ans)}")
+  end
+
 end
